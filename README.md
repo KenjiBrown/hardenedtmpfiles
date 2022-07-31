@@ -13,7 +13,7 @@ Race conditions reported in CVE-2017-18925 are prevented by first deleting
 the directory recursively and then creating a new one with mkdir. If the 
 destination is created before mkdir, the command will fail. 
 
-Under the principle of "better fail than corrupt", his script will
+Under the principle of "better fail than corrupt", this script will
 exit on any error.
 
 For more information on the files this utility can process, see the
