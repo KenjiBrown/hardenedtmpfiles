@@ -16,7 +16,7 @@
 # as of 2012/03/12 and also implements some more recent features
 #
 
-DRYRUN=0
+DRYRUN=1
 
 checkprefix() {
 	local x n="$1"
@@ -33,13 +33,42 @@ owned_by_root() {
 	local path="$1"
 	if [ -z "${path}" ] ; then
 		echo "Missing parameter" >&2
+		return 400
+	fi
+	if [ ! -e "${path}" ] ; then
+		echo "Path does not exist: ${path}"  >&2
 		return 404
 	fi
-	if [ -z "$(find "${path}" -maxdepth 0 -uid 0 -gid 0)" ] ; then
-		echo "Not owned by root" >&2
+	if [ "$( ls -lind ${path} | cut -d ' ' -f 5 )" -gt 0 ] ; then
+		echo "Not owned by root: ${path}" >&2
 		return 403
 	fi
 	return 0
+}
+
+is_link() {
+	local path="$1"
+	if [ -z "${path}" ] ; then
+		echo "Missing parameter" >&2
+		return 400
+	fi
+	if [ ! -e "${path}" ] ; then
+		echo "Path does not exist: ${path}"  >&2
+		return 404
+	fi
+	if [ -L "${path}" ] ; then
+		echo "Is symbolic link: ${path}"  >&2
+		return 0
+	fi
+	if [ -d  "${path}" ] ; then
+		echo "Is directory: ${path}"  >&2
+		return 1
+	fi
+	if [ "$( ls -lin ${path} | cut -d ' ' -f 4 )" -gt 0 ] ; then
+		echo "Is hard link: ${path}"  >&2
+		return 0
+	fi
+	return 1
 }
 
 warninvalid() {
@@ -53,89 +82,100 @@ invalid_option() {
 }
 
 dryrun_or_real() {
-	local dryrun=
-	if [ ${DRYRUN} -eq 1 ]; then
-		dryrun="echo"
+	if [ ${DRYRUN} == 1 ]; then
+		echo "$@" >&2
+	else
+		$@
 	fi
-	${dryrun} "$@"
 }
 
-_chattr() {
+_chattr_existing() {
 	local attr="$2"
 	case ${attr} in
 		[+-=]*) : ;;
 		'') return ;;
 		*) attr="+${attr}" ;;
 	esac
+	if is_link "$1" ; then
+		echo "Cowardly refusing to chattr on link: $1" >&2
+		return 403
+	fi
 	local IFS=
-	if ! owned_by_root "$1" ; then
-		echo "cowardly refusing to chattr" >&2
-		return 107
+	if owned_by_root "$1" ; then
+		echo "Warning: chattr path owned by root $1" >&2
 	fi
 	dryrun_or_real chattr "$1" "${attr}" -- "$3"
 }
 
-_setfacl() {
+_setfacl_existing() {
+	if is_link "$4" ; then
+		echo "Cowardly refusing to chattr on link: $4" >&2
+		return 403
+	fi
+	if owned_by_root "$4" ; then
+		echo "Warning: setfacl path owned by root $4" >&2
+	fi
 	dryrun_or_real setfacl -P "$1" "$2" "$3" -- "$4"
 }
 
-relabel() {
-	local path
-	local paths=$1 mode=$2 uid=$3 gid=$4
+_relabel_existing() {
+	local path=$1 mode=$2 uid=$3 gid=$4
 	local status
 
 	status=0
-	for path in ${paths}; do
-		if [ -e "${path}" ]; then
-			if ! owned_by_root $1 ; then
-				echo "cowardly refusing to relabel" >&2
-				return 108
-			fi
-			if [ -x /sbin/restorecon ]; then
-				dryrun_or_real restorecon ${CHOPTS} "${path}" || status="$?"
-				if [ ${status} -ne 0 ]; then
-					echo "error on restorecon"  >&2
-					exit $status
-				fi
-			fi
-			if [ "${uid}" != '-' ]; then
-				dryrun_or_real chown ${CHOPTS} "${uid}" "${path}" || status="$?"
-			fi
-			if [ "${gid}" != '-' ]; then
-				dryrun_or_real chgrp ${CHOPTS} "${gid}" "${path}" || status="$?"
-			fi
-			if [ "${mode}" != '-' ]; then
-				dryrun_or_real chmod ${CHOPTS} "${mode}" "${path}" || status="$?"
+	if [ -e "${path}" ]; then
+		# _relabel_existing uses root-defined plicies. Should be safe
+		if [ -x /sbin/restorecon ]; then
+			dryrun_or_real restorecon ${CHOPTS} "${path}" || status="$?"
+			if [ ${status} -ne 0 ]; then
+				echo "error on restorecon"  >&2
+				return $status
 			fi
 		fi
-	done
+		if is_link "${path}" ; then
+			echo "existing path is a link: $path" >&2
+			echo "cowardly refusing to change permissions" >&2
+			return 0
+		fi
+		if [ "${uid}" != '-' ]; then
+			_chown_existing "${uid}" "${path}" || status="$?"
+		fi
+		if [ "${gid}" != '-' ]; then
+			_chgrp_existing "${gid}" "${path}" || status="$?"
+		fi
+		if [ "${mode}" != '-' ]; then
+			_chmod_existing "${mode}" "${path}" || status="$?"
+		fi
+	fi
 	return ${status}
 }
 
-splitpath() {
-	local path=$1
-	while [ -n "${path}" ]; do
-	   printf '%s\n' "${path}"
-	   path=${path%/*}
-	done
-}
+#splitpath() {
+#	local path=$1
+#	while [ -n "${path}" ]; do
+#	   printf '%s\n' "${path}"
+#	   path=${path%/*}
+#	done
+#}
 
-_restorecon() {
+_restorecon_new() {
 	local path=$1
 	if ! owned_by_root $1 ; then
+		echo "New path not owned_by_root ${path}" >&2
 		echo "cowardly refusing to restorecon" >&2
-		return 103
+		return 0
 	fi
 	if [ -x /sbin/restorecon ]; then
-	   dryrun_or_real restorecon -F "$(splitpath "${path}")"
+	   dryrun_or_real restorecon -F "${path}"
 	fi
 }
 
-_chmod() {
+_chmod_new() {
 	local path=$2 mode=$1
 	if ! owned_by_root "${path}" ; then
+		echo "New path not owned_by_root ${path}" >&2
 		echo "cowardly refusing to chmod" >&2
-		return 106
+		return 0
 	fi
 	dryrun_or_real chmod ${mode} "${path}"
 	x=$?
@@ -145,11 +185,12 @@ _chmod() {
 	fi
 }
 
-_chown() {
+_chown_new() {
 	local path=$2 uid=$1
 	if ! owned_by_root "${path}" ; then
+		echo "New path not owned_by_root ${path}" >&2
 		echo "cowardly refusing to chmod" >&2
-		return 107
+		return 0
 	fi
 	dryrun_or_real chown ${uid} "${path}"
 	x=$?
@@ -159,13 +200,72 @@ _chown() {
 	fi
 }
 
-_chgrp() {
+_chgrp_new() {
 	local path=$2 gid=$1
 	if ! owned_by_root "${path}" ; then
+		echo "New path not owned_by_root ${path}" >&2
 		echo "cowardly refusing to chgrp" >&2
-		return 108
+		return 0
 	fi
 	dryrun_or_real chgrp ${gid} "${path}"
+	x=$?
+	if [ $x -ne 0 ]; then
+		echo "error on chgrp"  >&2
+		exit $x
+	fi
+}
+
+_chmod_existing() {
+	local path=$2 mode=$1
+	local pmode="$( stat -c %a ${path} )"
+	if owned_by_root "${path}" ; then
+		echo "Path owned by root: ${path}" >&2
+		if [ "${pmode}" == "${mode}" ] ; then
+			echo "Same mode ${mode}; doing nothing"
+			return 0
+		fi
+		echo "cowardly refusing to chmod" >&2
+		return 0
+	fi
+	dryrun_or_real chmod ${CHOPTS} "${mode}" "${path}"
+	x=$?
+	if [ $x -ne 0 ]; then
+		echo "error on chmod"  >&2
+		exit $x
+	fi
+}
+
+_chown_existing() {
+	local path=$2 uid=$1
+	if owned_by_root "${path}" ; then
+		echo "Path owned by root: ${path}" >&2
+		if [ "${uid}" == "0" ] || [ "${uid}" == "root" ] ; then
+			echo "Ignoring chown and other changes..." >&2
+			return 0
+		fi
+		echo "cowardly refusing to chmod" >&2
+		return 0
+	fi
+	dryrun_or_real chown ${CHOPTS} ${uid} "${path}"
+	x=$?
+	if [ $x -ne 0 ]; then
+		echo "error on chown"  >&2
+		exit $x
+	fi
+}
+
+_chgrp_existing() {
+	local path=$2 gid=$1
+	if owned_by_root "${path}" ; then
+		echo "Path owned by root: ${path}" >&2
+		if [ "${gid}" == "0" ] || [ "${gid}" == "root" ] ; then
+			echo "Ignoring chown and other changes..." >&2
+			return 0
+		fi
+		echo "cowardly refusing to chgrp" >&2
+		return 0
+	fi
+	dryrun_or_real chgrp ${CHOPTS} ${gid} "${path}"
 	x=$?
 	if [ $x -ne 0 ]; then
 		echo "error on chgrp"  >&2
@@ -180,8 +280,9 @@ _rm_f() {
 		return 112
 	fi
 	if owned_by_root "${path}" ; then
+		echo "owned by root: ${path}"  >&2
 		echo "cowardly refusing to rm" >&2
-		return 113
+		return 0
 	fi
 	rm -f "${path}"
 }
@@ -192,7 +293,11 @@ createdirectory() {
 	# avoids race condition
 	if [ -e "${path}" ] ; then
 		echo "Directory already exists" >&2
-		return 101
+		return 0
+	fi
+	
+	if [ ! -d "$( dirname ${path} )" ] ; then
+		createdirectory "755" "0" "0" "$( dirname ${path} )"
 	fi
 	dryrun_or_real mkdir "${path}"
 	# only continue on successful created directory 
@@ -211,21 +316,23 @@ createdirectory() {
 	if [ "${mode}" = - ]; then
 		mode=0755
 	fi
-	dryrun_or_real _chown ${uid} "${path}"
-	dryrun_or_real _chgrp ${gid} "${path}"
-	dryrun_or_real _chmod ${mode} "${path}"
+	_chown_new ${uid} "${path}"
+	_chgrp_new ${gid} "${path}"
+	_chmod_new ${mode} "${path}"
+	_restorecon_new "${path}"
 }
 
 createfile() {
 	local mode="$1" uid="$2" gid="$3" path="$4"
 	if [ -e "${path}" ] ; then
 		echo "File already exists" >&2
-		return 105
+		return 0
 	fi
 	dryrun_or_real touch "${path}"
 	if ! owned_by_root "${path}" ; then
+		echo "New file not owned_by_root ${path}" >&2
 		echo "cowardly refusing to chown/chgrp/chmod" >&2
-		return 106
+		return 0
 	fi
 	if [ "${uid}" = - ]; then
 		uid=root
@@ -236,9 +343,10 @@ createfile() {
 	if [ "${mode}" = - ]; then
 		mode=0644
 	fi
-	dryrun_or_real _chown ${uid} "${path}"
-	dryrun_or_real _chgrp ${gid} "${path}"
-	dryrun_or_real _chmod ${mode} "${path}"
+	_chown_new ${uid} "${path}"
+	_chgrp_new ${gid} "${path}"
+	_chmod_new ${mode} "${path}"
+	_restorecon_new "${path}"
 
 }
 
@@ -248,7 +356,7 @@ createpipe() {
 	# avoids race condition
 	if [ -e "${path}" ] ; then
 		echo "Pipe already exists" >&2
-		return 104
+		return 0
 	fi
 	dryrun_or_real mkfifo "${path}"
 	# only continue on successful created pipe 
@@ -267,9 +375,10 @@ createpipe() {
 	if [ "${mode}" = - ]; then
 		mode=0644
 	fi
-	dryrun_or_real _chown ${uid} "${path}"
-	dryrun_or_real _chgrp ${gid} "${path}"
-	dryrun_or_real _chmod ${mode} "${path}"
+	_chown_new ${uid} "${path}"
+	_chgrp_new ${gid} "${path}"
+	_chmod_new ${mode} "${path}"
+	_restorecon_new "${path}"
 }
 
 _b() {
@@ -291,9 +400,9 @@ _b() {
 			echo "error on mknod"  >&2
 			exit $x
 		fi
-		_restorecon "${path}"
-		dryrun_or_real _chown ${uid} "${path}"
-		dryrun_or_real _chgrp ${gid} "${path}"
+		_chown_new ${uid} "${path}"
+		_chgrp_new ${gid} "${path}"
+		_restorecon_new "${path}"
 	fi
 }
 
@@ -316,9 +425,9 @@ _c() {
 			echo "error on mknod"  >&2
 			exit $x
 		fi
-		_restorecon "${path}"
-		dryrun_or_real _chown ${uid} "${path}"
-		dryrun_or_real _chgrp ${gid} "${path}"
+		_chown_new ${uid} "${path}"
+		_chgrp_new ${gid} "${path}"
+		_restorecon_new "${path}"
 	fi
 }
 
@@ -326,31 +435,36 @@ _C() {
 	# recursively copy a file or directory
 	local path=$1 mode=$2 uid=$3 gid=$4 age=$5 arg=$6
 	if owned_by_root "${arg}" ; then
-		echo "cowardly refusing to copy root-owned dir" >&2
-		return 114
+		echo "Directory owned by root: ${path}"  >&2
+		if [ "${uid}" != "root" ] && [ "${uid}" != "0" ] ; then
+			echo "cowardly refusing to copy dir" >&2
+			return 0
+		fi
 	fi
-	if [ ! -e "${path}" ]; then
-		dryrun_or_real mkdir "$path"
+	if [ -e "${path}" ] ; then
+		echo "Directory ${path} already exists" >&2
+		local c="$( find ${path} | wc -l )"
+		if [ $c -gt 1 ] ; then
+			echo "Directory ${path} is not empty" >&2
+			return 0
+		fi
+	else
 		# only continue on successful created directory 
 		# avoids race condition
+		createdirectory "${mode}" "${uid}" "${gid}" "${path}"
 		x=$?
 		if [ $x -ne 0 ] ; then
-			echo "Could not create directory" >&2
+			echo "Could not create directory ${path}" >&2
 			exit $x
 		fi
-		# Ignore .hidden files should be OK
-		dryrun_or_real cp -r "${arg}/*" "${path}/"
-		_restorecon "${path}"
-		if [ "${uid}" != '-' ]; then
-			dryrun_or_real _chown "${uid}" "${path}"
-		fi
-		if [ "${gid}" != '-' ]; then
-			dryrun_or_real _chgrp "${gid}" "${path}"
-		fi
-		if [ "${mode}" != '-' ]; then
-			dryrun_or_real _chmod "${mode}" "${path}"
-		fi
 	fi
+
+	dryrun_or_real cp -r -d "${arg}/*" "${path}/"
+
+	local sub
+	for sub in ${path}/* ; do
+		_relabel_existing "${sub}" "${mode}" "${uid}" "${gid}"
+	done
 }
 
 _f() {
@@ -362,7 +476,7 @@ _f() {
 	if [ ! -e "${path}" ]; then
 		createfile "${mode}" "${uid}" "${gid}" "${path}"
 		if [ -n "${arg}" ]; then
-			_w "$@"
+			_w_no_check "$@"
 		fi
 	fi
 }
@@ -381,7 +495,7 @@ _F() {
 	fi
 	createfile "${mode}" "${uid}" "${gid}" "${path}"
 	if [ -n "${arg}" ]; then
-		_w "$@"
+		_w_no_check "$@"
 	fi
 }
 
@@ -391,7 +505,6 @@ _d() {
 
 	if [ "${CREATE}" -gt 0 ]; then
 		createdirectory "${mode}" "${uid}" "${gid}" "${path}"
-		_restorecon "${path}"
 	fi
 }
 
@@ -401,17 +514,16 @@ _D() {
 
 	if [ -d "${path}" ] && [ "${REMOVE}" -gt 0 ]; then
 		if owned_by_root "${path}" ; then
+			echo "owned_by_root ${path}" >&2
 			echo "Cowardly refusing to remove directory" >&2
-			return 102
+			return 0
 		fi
 		dryrun_or_real rm -rf "${path}"
 		createdirectory "${mode}" "${uid}" "${gid}" "${path}"
-		_restorecon "${path}"
 	fi
 
 	if [ "${CREATE}" -gt 0 ]; then
 		createdirectory "${mode}" "${uid}" "${gid}" "${path}"
-		_restorecon "${path}"
 	fi
 }
 
@@ -445,7 +557,7 @@ _a() {
 	# The format of the argument field matches setfacl
 	local ACTION='--remove-all --set'
 	[ "${FORCE}" -gt 0 ] && ACTION='--modify'
-	_setfacl '' "${ACTION}" "$6" "$1"
+	_setfacl_existing '' "${ACTION}" "$6" "$1"
 }
 
 _A() {
@@ -454,21 +566,21 @@ _A() {
 	# Does not follow symlinks
 	local ACTION='--remove-all --set'
 	[ "${FORCE}" -gt 0 ] && ACTION='--modify'
-	_setfacl -R "${ACTION}" "$6" "$1"
+	_setfacl_existing -R "${ACTION}" "$6" "$1"
 }
 
 _h() {
 	# Set file/directory attributes. Lines of this type accept
 	# shell-style globs in place of normal path names.
 	# The format of the argument field matches chattr
-	_chattr '' "$6" "$1"
+	_chattr_existing '' "$6" "$1"
 }
 
 _H() {
 	# Recursively set file/directory attributes. Lines of this type accept
 	# shell-syle globs in place of normal path names.
 	# Does not follow symlinks
-	_chattr -R "$6" "$1"
+	_chattr_existing -R "$6" "$1"
 }
 
 _L() {
@@ -481,8 +593,8 @@ _L() {
 			echo "error on ln"  >&2
 			exit $x
 		fi
+		_restorecon_new "${path}"
 	fi
-	_restorecon "${path}"
 }
 
 _p() {
@@ -528,8 +640,9 @@ _r() {
 	status=0
 	for path in ${paths}; do
 		if owned_by_root "${path}" ; then
-			echo "cowardly refusing to remove root-owned path" >&2
-			return 113
+			echo "owned_by_root ${path}" >&2
+			echo "cowardly refusing to remove path" >&2
+			return 0
 		fi
 		if [ -f "${path}" ]; then
 			dryrun_or_real rm -f "${path}" || status="$?"
@@ -557,8 +670,9 @@ _R() {
 	for path in ${paths}; do
 		if [ -d "${path}" ]; then
 			if owned_by_root "${path}" ; then
+				echo "owned_by_root ${path}" >&2
 				echo "cowardly refusing to remove directory" >&2
-				return 109
+				return 0
 			fi
 			dryrun_or_real rm -rf --one-file-system "${path}" || status="$?"
 		fi
@@ -575,11 +689,20 @@ _w() {
 	local path=$1 mode=$2 uid=$3 gid=$4 age=$5 arg=$6
 	if [ -f "${path}" ]; then
 		if owned_by_root "${path}" ; then
+			echo "owned_by_root ${path}" >&2
 			echo "cowardly refusing to write file" >&2
 			return 110
 		fi
+		_w_no_check "$@"
+	fi
+}
+
+_w_no_check() {
+	# Write the argument parameter to a file, if it exists.
+	local path=$1 mode=$2 uid=$3 gid=$4 age=$5 arg=$6
+	if [ -f "${path}" ]; then
 		if [ ${DRYRUN} -eq 1 ]; then
-			echo "echo \"${arg}\" >>\"${path}\""
+			echo "echo \"${arg}\" >>\"${path}\"" >&2
 		else
 			echo "${arg}" >>"${path}"
 		fi
@@ -592,7 +715,7 @@ _z() {
 	# place of normal path names.
 	[ "${CREATE}" -gt 0 ] || return 0
 
-	relabel "$@"
+	_relabel_existing "$@"
 }
 
 _Z() {
@@ -601,7 +724,7 @@ _Z() {
 	# accept shell-style globs in place of normal path names.
 	[ "${CREATE}" -gt 0 ] || return 0
 
-	CHOPTS=-R relabel "$@"
+	CHOPTS=-R _relabel_existing "$@"
 }
 
 usage() {
