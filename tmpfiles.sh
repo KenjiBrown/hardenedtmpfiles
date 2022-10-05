@@ -316,10 +316,10 @@ createdirectory() {
 	if [ "${mode}" = - ]; then
 		mode=0755
 	fi
-	_chown_new ${uid} "${path}"
-	_chgrp_new ${gid} "${path}"
-	_chmod_new ${mode} "${path}"
 	_restorecon_new "${path}"
+	_chmod_new ${mode} "${path}"
+	_chgrp_new ${gid} "${path}"
+	_chown_new ${uid} "${path}"
 }
 
 createfile() {
@@ -343,10 +343,10 @@ createfile() {
 	if [ "${mode}" = - ]; then
 		mode=0644
 	fi
-	_chown_new ${uid} "${path}"
-	_chgrp_new ${gid} "${path}"
-	_chmod_new ${mode} "${path}"
 	_restorecon_new "${path}"
+	_chmod_new ${mode} "${path}"
+	_chgrp_new ${gid} "${path}"
+	_chown_new ${uid} "${path}"
 
 }
 
@@ -375,10 +375,10 @@ createpipe() {
 	if [ "${mode}" = - ]; then
 		mode=0644
 	fi
-	_chown_new ${uid} "${path}"
-	_chgrp_new ${gid} "${path}"
-	_chmod_new ${mode} "${path}"
 	_restorecon_new "${path}"
+	_chmod_new ${mode} "${path}"
+	_chgrp_new ${gid} "${path}"
+	_chown_new ${uid} "${path}"
 }
 
 _b() {
@@ -400,9 +400,9 @@ _b() {
 			echo "error on mknod"  >&2
 			exit $x
 		fi
-		_chown_new ${uid} "${path}"
-		_chgrp_new ${gid} "${path}"
 		_restorecon_new "${path}"
+		_chgrp_new ${gid} "${path}"
+		_chown_new ${uid} "${path}"
 	fi
 }
 
@@ -425,9 +425,9 @@ _c() {
 			echo "error on mknod"  >&2
 			exit $x
 		fi
-		_chown_new ${uid} "${path}"
-		_chgrp_new ${gid} "${path}"
 		_restorecon_new "${path}"
+		_chgrp_new ${gid} "${path}"
+		_chown_new ${uid} "${path}"
 	fi
 }
 
