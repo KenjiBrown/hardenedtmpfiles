@@ -16,7 +16,7 @@
 # as of 2012/03/12 and also implements some more recent features
 #
 
-DRYRUN=1
+DRYRUN=0
 
 checkprefix() {
 	local x n="$1"
@@ -39,7 +39,7 @@ owned_by_root() {
 		echo "Path does not exist: ${path}"  >&2
 		return 404
 	fi
-	if [ "$( ls -lind ${path} | cut -d ' ' -f 5 )" -gt 0 ] ; then
+	if [ $( ls -lind ${path} | cut -d ' ' -f 4 ) -gt 0 ] ; then
 		echo "Not owned by root: ${path}" >&2
 		return 403
 	fi
@@ -64,7 +64,7 @@ is_link() {
 		echo "Is directory: ${path}"  >&2
 		return 1
 	fi
-	if [ "$( ls -lin ${path} | cut -d ' ' -f 4 )" -gt 0 ] ; then
+	if [ "$( ls -lin ${path} | cut -d ' ' -f 3 )" -gt 0 ] ; then
 		echo "Is hard link: ${path}"  >&2
 		return 0
 	fi
@@ -177,7 +177,7 @@ _chmod_new() {
 		echo "cowardly refusing to chmod" >&2
 		return 0
 	fi
-	dryrun_or_real chmod ${mode} "${path}"
+	dryrun_or_real chmod "${mode}" "${path}"
 	x=$?
 	if [ $x -ne 0 ]; then
 		echo "error on chmod"  >&2
@@ -192,7 +192,7 @@ _chown_new() {
 		echo "cowardly refusing to chmod" >&2
 		return 0
 	fi
-	dryrun_or_real chown ${uid} "${path}"
+	dryrun_or_real chown "${uid}" "${path}"
 	x=$?
 	if [ $x -ne 0 ]; then
 		echo "error on chown"  >&2
@@ -207,7 +207,7 @@ _chgrp_new() {
 		echo "cowardly refusing to chgrp" >&2
 		return 0
 	fi
-	dryrun_or_real chgrp ${gid} "${path}"
+	dryrun_or_real chgrp "${gid}" "${path}"
 	x=$?
 	if [ $x -ne 0 ]; then
 		echo "error on chgrp"  >&2
@@ -292,7 +292,7 @@ createdirectory() {
 	# Do nothing if existing directory
 	# avoids race condition
 	if [ -e "${path}" ] ; then
-		echo "Directory already exists" >&2
+		echo "Directory already exists ${path}" >&2
 		return 0
 	fi
 	
